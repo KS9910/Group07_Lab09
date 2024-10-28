@@ -1,10 +1,14 @@
-#include  <stdint.h>
+#include <stdint.h>
 #include <stdbool.h>
+#include <math.h>        // For sine function
 #include "tm4c123gh6pm.h"
 
-#include  <stdint.h>
+#define PI 3.14159265358979323846
+#define FREQ 1000         // Desired frequency of the sine wave in Hz
+#define SAMPLE_RATE 10000 // Number of samples per second
+#define Slave_ADDRESS 0x51  // Assume DAC I2C address is 0x76 (change if needed)
+#define DAC_reg 0x40  // DAC register to write
 
-#include "tm4c123gh6pm.h"
 void I2C_GPIO_CONFG(void)
 {
     SYSCTL_RCGCI2C_R |= SYSCTL_RCGCI2C_R0;  // enable clock for I2C
@@ -20,7 +24,7 @@ void I2C_GPIO_CONFG(void)
 //    I2C0_MCS_R = 0x00000007;
 }
 
-void I2C_Write(uint8_t slave_addr, uint8_t reg, uint16_t data) {
+void I2C_Write(uint8_t slave_addr, uint8_t reg, uint8_t data) {
     I2C0_MSA_R = (slave_addr << 1) & 0xFE;  // Set I2C Master Slave Address (write mode)
 
     // Set data to be sent (DAC register and data)
@@ -31,17 +35,36 @@ void I2C_Write(uint8_t slave_addr, uint8_t reg, uint16_t data) {
     while (I2C0_MCS_R & 1);                 // Wait for transmission to complete
     if (I2C0_MCS_R & 0xE) return;           // Return on error
 
-    I2C0_MDR_R = (data >> 8) & 0xFF;        // Send the MSB first
-    I2C0_MCS_R = 1;                         // Run without start/stop
+//    I2C0_MDR_R = (data >> 8) & 0xFF;        // Send the MSB first
+//    I2C0_MCS_R = 1;                         // Run without start/stop
+//
+//    while (I2C0_MCS_R & 1);                 // Wait for transmission to complete
+//    if (I2C0_MCS_R & 0xE) return;           // Return on error
 
-    while (I2C0_MCS_R & 1);                 // Wait for transmission to complete
-    if (I2C0_MCS_R & 0xE) return;           // Return on error
-
-    I2C0_MDR_R = data & 0xFF;               // Send the LSB
+    I2C0_MDR_R = data;               // Send the LSB
     I2C0_MCS_R = 5;                         // Run and Stop conditions
 
     while (I2C0_MCS_R & 1);                 // Wait for transmission to complete
     if (I2C0_MCS_R & 0xE) return;           // Return on error
 }
 
+void generate_sine_wave() {
+    uint8_t sine_wave[100];  // Array to store sine wave values
+    int i;
+    for (i = 0; i < 100; i++) {
+        // Generate sine values between 0 and 255 for an 8-bit DAC
+        sine_wave[i] = (uint8_t)(127.5 * (1 + sin(2 * PI * i / 100)));
+    }
 
+    while (1) {
+        for (i = 0; i < 100; i++) {
+            I2C_Write(Slave_ADDRESS, DAC_reg, sine_wave[i]);  // Send each value to DAC
+        }
+    }
+}
+
+int main(void) {
+    I2C_GPIO_CONFG();                  // Configure I2C GPIO
+    generate_sine_wave(); // Generate triangular wave
+    return 0;
+}
