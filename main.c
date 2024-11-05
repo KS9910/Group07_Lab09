@@ -1,70 +1,71 @@
 #include <stdint.h>
-#include <stdbool.h>
-#include <math.h>        // For sine function
 #include "tm4c123gh6pm.h"
 
-#define PI 3.14159265358979323846
-#define FREQ 1000         // Desired frequency of the sine wave in Hz
-#define SAMPLE_RATE 10000 // Number of samples per second
-#define Slave_ADDRESS 0x51  // Assume DAC I2C address is 0x76 (change if needed)
-#define DAC_reg 0x40  // DAC register to write
+volatile int start=0;
+void I2C_Init(void) {
+    SYSCTL_RCGCI2C_R |= 0x01;            // Enable clock to I2C0 module
+    SYSCTL_RCGCGPIO_R |= 0x02;           // Enable clock to Port B
 
-void I2C_GPIO_CONFG(void)
-{
-    SYSCTL_RCGCI2C_R |= SYSCTL_RCGCI2C_R0;  // enable clock for I2C
-    SYSCTL_RCGCGPIO_R |= SYSCTL_RCGCGPIO_R1;  //enable clock for GPIO
-    GPIO_PORTB_AFSEL_R |= (1 << 2) | (1 << 3); //Enable alternate functions for PB2 (SCL) and PB3 (SDA)
-    GPIO_PORTB_PCTL_R |= GPIO_PCTL_PB3_I2C0SDA | GPIO_PCTL_PB2_I2C0SCL;  // Set PCTL for PB2 as SCL and PB3 as SDA
-    GPIO_PORTA_DEN_R |= (1 << 2) | (1 << 3);     // Enable digital I/O for PB2 and PB3
-    GPIO_PORTB_ODR_R |= (1 << 3); // open-drain operation for PB3(SDA)
-    I2C0_MCR_R= 0x00000010; // Initialize the I2C Master
-    I2C0_MTPR_R= 9;  // TPR is 9
-//    I2C0_MSA_R = 0x00000076; //Master address for transmit
-//    I2C0_MDR_R= 0X000000C3;  // Slave address which need to send initially
-//    I2C0_MCS_R = 0x00000007;
-}
+    GPIO_PORTB_AFSEL_R |= 0x0C;          // Enable alternate function on PB2 and PB3
+    GPIO_PORTB_ODR_R |= 0x08;            // Enable open drain on PB3 (SDA)
+    GPIO_PORTB_DEN_R |= 0x0C;            // Enable digital I/O on PB2 and PB3
+    GPIO_PORTB_PCTL_R = (GPIO_PORTB_PCTL_R & 0xFFFF00FF) | 0x00003300; // Assign I2C signals to PB2 and PB3
 
-void I2C_Write(uint8_t slave_addr, uint8_t reg, uint8_t data) {
-    I2C0_MSA_R = (slave_addr << 1) & 0xFE;  // Set I2C Master Slave Address (write mode)
-
-    // Set data to be sent (DAC register and data)
-    I2C0_MDR_R = reg;                       // DAC register pointer
-    I2C0_MCS_R = 3;                         // Send Start and Run conditions
-
-    // Wait for transmission completion and check errors
-    while (I2C0_MCS_R & 1);                 // Wait for transmission to complete
-    if (I2C0_MCS_R & 0xE) return;           // Return on error
-
-//    I2C0_MDR_R = (data >> 8) & 0xFF;        // Send the MSB first
-//    I2C0_MCS_R = 1;                         // Run without start/stop
-//
-//    while (I2C0_MCS_R & 1);                 // Wait for transmission to complete
-//    if (I2C0_MCS_R & 0xE) return;           // Return on error
-
-    I2C0_MDR_R = data;               // Send the LSB
-    I2C0_MCS_R = 5;                         // Run and Stop conditions
-
-    while (I2C0_MCS_R & 1);                 // Wait for transmission to complete
-    if (I2C0_MCS_R & 0xE) return;           // Return on error
-}
-
-void generate_sine_wave() {
-    uint8_t sine_wave[100];  // Array to store sine wave values
-    int i;
-    for (i = 0; i < 100; i++) {
-        // Generate sine values between 0 and 255 for an 8-bit DAC
-        sine_wave[i] = (uint8_t)(127.5 * (1 + sin(2 * PI * i / 100)));
-    }
-
-    while (1) {
-        for (i = 0; i < 100; i++) {
-            I2C_Write(Slave_ADDRESS, DAC_reg, sine_wave[i]);  // Send each value to DAC
-        }
-    }
+    I2C0_MCR_R = 0x10;                   // Initialize I2C master function
+    I2C0_MTPR_R = 0x09;                  // Set SCL clock speed (based on 16 MHz clock for 100 kbps)
 }
 
 int main(void) {
-    I2C_GPIO_CONFG();                  // Configure I2C GPIO
-    generate_sine_wave(); // Generate triangular wave
-    return 0;
+    I2C_Init();
+
+    int slaveAddr = 0x61;
+    int data[1] = {0x0000};    // Transmit data
+    int datasent[2];    // Data to send
+    int direction = 1;  // 1 for incrementing, -1 for decrementing
+
+    // Populate datasent with 16-bit data, handling only available data elements
+    datasent[0] = (data[0] >> 8) & 0xFF;
+    datasent[1] = data[0] & 0xFF;
+    int i = 0;
+    I2C0_MSA_R = (slaveAddr << 1) & 0xFE;  // Set slave address for write
+
+    while (1) {
+        I2C0_MDR_R = datasent[i % 2];  // Load the byte to transmit
+
+        if (i == 0 && start == 0) {
+            I2C0_MCS_R |= 0x03;  // First byte: START and RUN
+            start = 1;
+        } else {
+            I2C0_MCS_R = 0x01;  // Middle bytes: RUN only
+        }
+
+        while (I2C0_MCS_R & 0x01);  // Wait until BUSY clears
+
+        if (I2C0_MCS_R & 0x02) {  // Check for errors
+            I2C0_MCS_R = 0x04;  // Send STOP to recover if error
+            break;
+        }
+
+        // Increment or decrement data[0] based on the direction, but only when i % 3 == 2
+        if (i % 3 == 2) {
+            if (direction == 1) {
+                if (data[0] < 4090) {
+                    data[0] += 4096 / 1000;  // Increment
+                } else {
+                    direction = -1;  // Switch to decrementing when upper limit is reached
+                }
+            } else if (direction == -1) {
+                if (data[0] > 0) {
+                    data[0] -= 4096 / 1000;  // Decrement
+                } else {
+                    direction = 1;  // Switch to incrementing when lower limit is reached
+                }
+            }
+        }
+
+        // Update datasent with the new value
+        datasent[0] = (data[0] >> 8) & 0xFF;
+        datasent[1] = data[0] & 0xFF;
+        i = i + 1;
+    }
 }
